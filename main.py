@@ -11,6 +11,10 @@ from scipy.spatial import KDTree
 from math import radians
 import re
 from functools import lru_cache
+from datetime import timedelta
+import asyncio
+import httpx
+
 
 
 
@@ -394,7 +398,27 @@ async def ambulance_counts_district_ws(websocket: WebSocket):
 
         await websocket.close()
 ##########################################Villages Over 20 min api#############################################################
+import asyncio
+import re
+import numpy as np
+from scipy.spatial import KDTree
+
+# ─────────────────────────────────────────
+# CONSTANTS
+# ─────────────────────────────────────────
+
+ETA_THRESHOLD_MIN = 20.0
+DETOUR_FACTOR     = 1.3    # straight-line → road distance (India rural standard)
+
+# ─────────────────────────────────────────
+# CACHE
+# ─────────────────────────────────────────
+
 _village_centroid_cache = {}
+
+# ─────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────
 
 def get_village_centroid(uid, geometry):
     if uid in _village_centroid_cache:
@@ -407,9 +431,9 @@ def get_village_centroid(uid, geometry):
     if not coords:
         return None
 
-    sample = coords[:20]
-    lons = [float(c[0]) for c in sample]
-    lats = [float(c[1]) for c in sample]
+    sample   = coords[:20]
+    lons     = [float(c[0]) for c in sample]
+    lats     = [float(c[1]) for c in sample]
     centroid = (sum(lats) / len(lats), sum(lons) / len(lons))
 
     _village_centroid_cache[uid] = centroid
@@ -427,68 +451,260 @@ def build_ambulance_kdtree(ambulance_rows):
     if not points:
         return None, None
 
-    arr = np.array(points)
+    arr  = np.array(points)
     tree = KDTree(arr)
     return tree, arr
-@app.get("/villages_over_20min")
-async def villages_over_20min():
 
+
+def haversine_vectorized(lat1_arr, lon1_arr, lat2_arr, lon2_arr):
+    R    = 6371.0
+    lat1 = np.radians(lat1_arr)
+    lon1 = np.radians(lon1_arr)
+    lat2 = np.radians(lat2_arr)
+    lon2 = np.radians(lon2_arr)
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = (
+        np.sin(dlat / 2) ** 2
+        + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    )
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+    return R * c
+
+
+# ─────────────────────────────────────────
+# ENDPOINT
+# ─────────────────────────────────────────
+
+@app.get("/villages_over_20min")
+async def villages_over_20min(
+    eta_threshold_min: float = ETA_THRESHOLD_MIN,
+):
     ambulance_query = """
-        SELECT amb_lat, amb_log FROM ems_ambulance
+        SELECT
+            amb_lat,
+            amb_log
+        FROM ems_ambulance
         WHERE ambis_deleted = '0'
-          AND amb_lat IS NOT NULL AND amb_log IS NOT NULL
-          AND amb_lat <> '' AND amb_log <> ''
+          AND amb_lat IS NOT NULL
+          AND amb_log IS NOT NULL
+          AND amb_lat <> ''
+          AND amb_log <> ''
     """
+
     village_query = """
-        SELECT state, district, tehsil, village, uid, geometry
+        SELECT
+            state,
+            district,
+            tehsil,
+            village,
+            uid,
+            geometry
         FROM maha_village_v1
         WHERE geometry IS NOT NULL
     """
 
-    ambulance_rows, village_rows = await asyncio.gather(
-        cached_query(ambulance_query, ttl=300),
-        cached_query(village_query, ttl=300),
-    )
+    ambulance_rows = await cached_query(ambulance_query, ttl=300)
+    village_rows   = await cached_query(village_query,   ttl=300)
 
     tree, amb_arr = build_ambulance_kdtree(ambulance_rows)
-
     if tree is None:
-        return {"total_villages": 0, "villages": []}
+        return {
+            "total_villages": 0,
+            "villages":       [],
+            "error":          "No valid ambulance coordinates found",
+        }
 
     village_data = []
     for v in village_rows:
-        try:
-            centroid = get_village_centroid(v["uid"], v["geometry"])
-            if centroid:
-                village_data.append((centroid, v))
-        except:
-            continue
+        centroid = get_village_centroid(v["uid"], v["geometry"])
+        if centroid:
+            village_data.append((centroid, v))
 
     if not village_data:
-        return {"total_villages": 0, "villages": []}
+        return {
+            "total_villages": 0,
+            "villages":       [],
+            "error":          "No valid village geometries found",
+        }
 
-    
-    centroids = np.array([d[0] for d in village_data])  # shape: (N, 2)
+    centroids        = np.array([d[0] for d in village_data])
+    _, nearest_idx   = tree.query(centroids)
+    nearest_amb_lats = amb_arr[nearest_idx, 0]
+    nearest_amb_lons = amb_arr[nearest_idx, 1]
+    village_lats     = centroids[:, 0]
+    village_lons     = centroids[:, 1]
 
-    distances_deg, _ = tree.query(centroids)
+    straight_km = haversine_vectorized(
+        nearest_amb_lats, nearest_amb_lons,
+        village_lats,     village_lons,
+    )
 
-    distances_km = distances_deg * 111.0
+    road_km     = straight_km * DETOUR_FACTOR
+    eta_minutes = (road_km / 45.0) * 60.0
 
-    eta_minutes = (distances_km / 20) * 60
     village_list = [
         {
-            "state": v["state"],
-            "district": v["district"],
-            "tehsil": v["tehsil"],
-            "village": v["village"],
-            "uid": v["uid"],
-            "geometry": v["geometry"],
+            "state":             v["state"],
+            "district":          v["district"],
+            "tehsil":            v["tehsil"],
+            "village":           v["village"],
+            "uid":               v["uid"],
+            "geometry":          v["geometry"],
+            "straight_line_km":  round(float(straight_km[i]), 2),
+            "estimated_road_km": round(float(road_km[i]),     2),
+            "eta_minutes":       round(float(eta_minutes[i]), 1),
         }
-        for (_, v), eta in zip(village_data, eta_minutes)
-        if eta > 20
+        for i, (_, v) in enumerate(village_data)
+        if eta_minutes[i] > eta_threshold_min
     ]
 
+    village_list.sort(key=lambda x: x["eta_minutes"], reverse=True)
+
     return {
-        "total_villages": len(village_list),
-        "villages": village_list
+        "total_villages":    len(village_list),
+        "eta_threshold_min": eta_threshold_min,
+        "villages":          village_list,
     }
+#############################################################################################################################################
+def format_time(value):
+    if value is None:
+        return "00:00:00"
+
+    if isinstance(value, timedelta):
+        total_seconds = int(value.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+    return str(value)
+
+
+@app.websocket("/ws/response_time_metrics")
+async def response_time_metrics_ws(websocket: WebSocket):
+    await websocket.accept()
+
+    prev_data = None
+    amb_rto_register_no = None
+
+    try:
+        while True:
+
+            # ----------------------------------------
+            # 🔹 Receive filter from frontend
+            # ----------------------------------------
+            try:
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
+                msg_data = json.loads(msg)
+
+                if "amb_rto_register_no" in msg_data:
+                    amb_rto_register_no = msg_data["amb_rto_register_no"] or None
+
+            except asyncio.TimeoutError:
+                pass
+
+            # ----------------------------------------
+            # 🔹 WHERE clause
+            # ----------------------------------------
+            where_clause = "WHERE 1=1"
+            params = {}
+
+            if amb_rto_register_no:
+                where_clause += " AND ea.amb_rto_register_no = :amb_rto_register_no"
+                params["amb_rto_register_no"] = amb_rto_register_no
+
+            # ----------------------------------------
+            # 🚀 OVERALL METRICS
+            # ----------------------------------------
+            query_overall = f"""
+                SELECT
+                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_call_to_wheel_time))) AS average_call_to_wheel_time,
+                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_wheel_to_scene_time))) AS average_wheel_to_scene_time,
+                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_scene_to_hospital_time))) AS average_scene_to_hospital_time,
+                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_hospital_to_base_time))) AS average_hospital_to_base_time,
+                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_response_time))) AS average_response_time_mmss
+
+                FROM ambulance_averages_dash a
+                JOIN ems_ambulance ea
+                    ON a.amb_rto_register_no = ea.amb_rto_register_no
+
+                {where_clause}
+            """
+
+            overall_result = await cached_query(
+                query_overall,
+                params,
+                ttl=10,
+                fetch="one",
+                db=database
+            )
+
+            current_data = {
+                "average_call_to_wheel_time": format_time(overall_result["average_call_to_wheel_time"]),
+                "average_wheel_to_scene_time": format_time(overall_result["average_wheel_to_scene_time"]),
+                "average_scene_to_hospital_time": format_time(overall_result["average_scene_to_hospital_time"]),
+                "average_hospital_to_base_time": format_time(overall_result["average_hospital_to_base_time"]),
+                "average_response_time_mmss": format_time(overall_result["average_response_time_mmss"]),
+            }
+
+            # ----------------------------------------
+            # 🚀 DIVISION-WISE METRICS (FIXED JOIN)
+            # ----------------------------------------
+            query_divisions = f"""
+                SELECT
+                    dv.div_code AS division_code,
+                    dv.div_name AS division_name,
+
+                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_call_to_wheel_time))) AS average_call_to_wheel_time,
+                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_wheel_to_scene_time))) AS average_wheel_to_scene_time,
+                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_scene_to_hospital_time))) AS average_scene_to_hospital_time,
+                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_hospital_to_base_time))) AS average_hospital_to_base_time,
+                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_response_time))) AS average_response_time_mmss
+
+                FROM ambulance_averages_dash a
+
+                JOIN ems_ambulance ea
+                    ON a.amb_rto_register_no = ea.amb_rto_register_no
+
+                JOIN ems_mas_division dv
+                    ON ea.amb_div_code = dv.div_code
+
+                {where_clause}
+
+                GROUP BY dv.div_code, dv.div_name
+            """
+
+            division_results = await cached_query(
+                query_divisions,
+                params,
+                ttl=10,
+                db=database
+            )
+
+            divisions_data = []
+            for row in division_results:
+                divisions_data.append({
+                    "division_code": row["division_code"],
+                    "division_name": row["division_name"],
+                    "average_call_to_wheel_time": format_time(row["average_call_to_wheel_time"]),
+                    "average_wheel_to_scene_time": format_time(row["average_wheel_to_scene_time"]),
+                    "average_scene_to_hospital_time": format_time(row["average_scene_to_hospital_time"]),
+                    "average_hospital_to_base_time": format_time(row["average_hospital_to_base_time"]),
+                    "average_response_time_mmss": format_time(row["average_response_time_mmss"]),
+                })
+
+            current_data["divisions"] = divisions_data
+
+            # ----------------------------------------
+            # 🔹 Send only if changed
+            # ----------------------------------------
+            if current_data != prev_data:
+                await websocket.send_json(current_data)
+                prev_data = current_data
+
+            await asyncio.sleep(15)
+
+    except WebSocketDisconnect:
+        print("Client disconnected.")
