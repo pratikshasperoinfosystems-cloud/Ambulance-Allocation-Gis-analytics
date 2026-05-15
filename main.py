@@ -14,12 +14,19 @@ from functools import lru_cache
 from datetime import timedelta
 import asyncio
 import httpx
+from fastapi.middleware.cors import CORSMiddleware
 
 
 
 
 app = FastAPI()
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 async def startup():
@@ -398,27 +405,12 @@ async def ambulance_counts_district_ws(websocket: WebSocket):
 
         await websocket.close()
 ##########################################Villages Over 20 min api#############################################################
-import asyncio
-import re
-import numpy as np
-from scipy.spatial import KDTree
-
-# ─────────────────────────────────────────
-# CONSTANTS
-# ─────────────────────────────────────────
-
 ETA_THRESHOLD_MIN = 20.0
-DETOUR_FACTOR     = 1.3    # straight-line → road distance (India rural standard)
+DETOUR_FACTOR     = 1.3
 
-# ─────────────────────────────────────────
-# CACHE
-# ─────────────────────────────────────────
 
 _village_centroid_cache = {}
 
-# ─────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────
 
 def get_village_centroid(uid, geometry):
     if uid in _village_centroid_cache:
@@ -473,10 +465,6 @@ def haversine_vectorized(lat1_arr, lon1_arr, lat2_arr, lon2_arr):
     c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
     return R * c
 
-
-# ─────────────────────────────────────────
-# ENDPOINT
-# ─────────────────────────────────────────
 
 @app.get("/villages_over_20min")
 async def villages_over_20min(
@@ -545,6 +533,22 @@ async def villages_over_20min(
     road_km     = straight_km * DETOUR_FACTOR
     eta_minutes = (road_km / 45.0) * 60.0
 
+    # Round ke baad compare — floating point 20.0 issue fix
+    eta_rounded = np.round(eta_minutes, 1)
+
+    total_villages  = len(village_data)
+    uncovered_mask  = eta_rounded > eta_threshold_min   # strictly > 20.0
+    covered_mask    = ~uncovered_mask
+
+    uncovered_count = int(np.sum(uncovered_mask))
+    covered_count   = total_villages - uncovered_count
+
+    uncovered_pct   = round((uncovered_count / total_villages) * 100, 1)
+    covered_pct     = round((covered_count   / total_villages) * 100, 1)
+
+    avg_eta_covered   = round(float(np.mean(eta_rounded[covered_mask])),   1) if covered_count   > 0 else 0.0
+    avg_eta_uncovered = round(float(np.mean(eta_rounded[uncovered_mask])), 1) if uncovered_count > 0 else 0.0
+
     village_list = [
         {
             "state":             v["state"],
@@ -555,20 +559,28 @@ async def villages_over_20min(
             "geometry":          v["geometry"],
             "straight_line_km":  round(float(straight_km[i]), 2),
             "estimated_road_km": round(float(road_km[i]),     2),
-            "eta_minutes":       round(float(eta_minutes[i]), 1),
+            "eta_minutes":       float(eta_rounded[i]),
         }
         for i, (_, v) in enumerate(village_data)
-        if eta_minutes[i] > eta_threshold_min
+        if uncovered_mask[i]
     ]
 
     village_list.sort(key=lambda x: x["eta_minutes"], reverse=True)
 
     return {
-        "total_villages":    len(village_list),
-        "eta_threshold_min": eta_threshold_min,
-        "villages":          village_list,
+        "summary": {
+            "total_villages":        total_villages,
+            "covered_villages":      covered_count,
+            "uncovered_villages":    uncovered_count,
+            "covered_pct":           f"{covered_pct}%",
+            "uncovered_pct":         f"{uncovered_pct}%",
+            "avg_eta_covered_min":   avg_eta_covered,
+            "avg_eta_uncovered_min": avg_eta_uncovered,
+            "eta_threshold_min":     eta_threshold_min,
+        },
+        "Uncovered_villages": village_list,
     }
-#############################################################################################################################################
+###########################################Response Time Websocket##################################################################################################
 def format_time(value):
     if value is None:
         return "00:00:00"
@@ -592,9 +604,6 @@ async def response_time_metrics_ws(websocket: WebSocket):
     try:
         while True:
 
-            # ----------------------------------------
-            # 🔹 Receive filter from frontend
-            # ----------------------------------------
             try:
                 msg = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
                 msg_data = json.loads(msg)
@@ -697,9 +706,6 @@ async def response_time_metrics_ws(websocket: WebSocket):
 
             current_data["divisions"] = divisions_data
 
-            # ----------------------------------------
-            # 🔹 Send only if changed
-            # ----------------------------------------
             if current_data != prev_data:
                 await websocket.send_json(current_data)
                 prev_data = current_data
@@ -708,3 +714,4 @@ async def response_time_metrics_ws(websocket: WebSocket):
 
     except WebSocketDisconnect:
         print("Client disconnected.")
+###########################################################################################################################
