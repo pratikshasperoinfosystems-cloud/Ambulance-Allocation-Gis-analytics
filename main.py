@@ -795,8 +795,10 @@ def format_time(value):
 
     if isinstance(value, timedelta):
         total_seconds = int(value.total_seconds())
+
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
+
         return f"{hours:02}:{minutes:02}:{seconds:02}"
 
     return str(value)
@@ -804,48 +806,70 @@ def format_time(value):
 
 @app.websocket("/ws/response_time_metrics")
 async def response_time_metrics_ws(websocket: WebSocket):
+
     await websocket.accept()
 
     prev_data = None
-    amb_rto_register_no = None
+    division_name = None
 
     try:
         while True:
 
             try:
-                msg = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
+                msg = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=0.1
+                )
+
                 msg_data = json.loads(msg)
 
-                if "amb_rto_register_no" in msg_data:
-                    amb_rto_register_no = msg_data["amb_rto_register_no"] or None
+                if "division_name" in msg_data:
+                    division_name = msg_data["division_name"] or None
 
             except asyncio.TimeoutError:
                 pass
 
             # ----------------------------------------
-            # 🔹 WHERE clause
+            # WHERE CLAUSE
             # ----------------------------------------
-            where_clause = "WHERE 1=1"
+            where_clause = """
+                WHERE dv.div_name IS NOT NULL
+            """
+
             params = {}
 
-            if amb_rto_register_no:
-                where_clause += " AND ea.amb_rto_register_no = :amb_rto_register_no"
-                params["amb_rto_register_no"] = amb_rto_register_no
+            if division_name:
+                where_clause += " AND dv.div_name = :division_name"
+                params["division_name"] = division_name
 
             # ----------------------------------------
-            # 🚀 OVERALL METRICS
+            # OVERALL METRICS
             # ----------------------------------------
             query_overall = f"""
                 SELECT
-                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_call_to_wheel_time))) AS average_call_to_wheel_time,
-                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_wheel_to_scene_time))) AS average_wheel_to_scene_time,
-                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_scene_to_hospital_time))) AS average_scene_to_hospital_time,
-                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_hospital_to_base_time))) AS average_hospital_to_base_time,
-                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_response_time))) AS average_response_time_mmss
+
+                    AVG(a.average_call_to_wheel_time::interval)
+                        AS average_call_to_wheel_time,
+
+                    AVG(a.average_wheel_to_scene_time::interval)
+                        AS average_wheel_to_scene_time,
+
+                    AVG(a.average_scene_to_hospital_time::interval)
+                        AS average_scene_to_hospital_time,
+
+                    AVG(a.average_hospital_to_base_time::interval)
+                        AS average_hospital_to_base_time,
+
+                    AVG(a.average_response_time::interval)
+                        AS average_response_time_mmss
 
                 FROM ambulance_averages_dash a
+
                 JOIN ems_ambulance ea
-                    ON a.amb_rto_register_no = ea.amb_rto_register_no
+                    ON a.ambulance_no = ea.amb_rto_register_no
+
+                JOIN ems_mas_division dv
+                    ON ea.amb_div_code = dv.div_code
 
                 {where_clause}
             """
@@ -859,38 +883,62 @@ async def response_time_metrics_ws(websocket: WebSocket):
             )
 
             current_data = {
-                "average_call_to_wheel_time": format_time(overall_result["average_call_to_wheel_time"]),
-                "average_wheel_to_scene_time": format_time(overall_result["average_wheel_to_scene_time"]),
-                "average_scene_to_hospital_time": format_time(overall_result["average_scene_to_hospital_time"]),
-                "average_hospital_to_base_time": format_time(overall_result["average_hospital_to_base_time"]),
-                "average_response_time_mmss": format_time(overall_result["average_response_time_mmss"]),
+
+                "average_call_to_wheel_time": format_time(
+                    overall_result["average_call_to_wheel_time"]
+                ),
+
+                "average_wheel_to_scene_time": format_time(
+                    overall_result["average_wheel_to_scene_time"]
+                ),
+
+                "average_scene_to_hospital_time": format_time(
+                    overall_result["average_scene_to_hospital_time"]
+                ),
+
+                "average_hospital_to_base_time": format_time(
+                    overall_result["average_hospital_to_base_time"]
+                ),
+
+                "average_response_time_mmss": format_time(
+                    overall_result["average_response_time_mmss"]
+                ),
             }
 
             # ----------------------------------------
-            # 🚀 DIVISION-WISE METRICS (FIXED JOIN)
+            # DIVISION-WISE METRICS
             # ----------------------------------------
             query_divisions = f"""
                 SELECT
-                    dv.div_code AS division_code,
+
                     dv.div_name AS division_name,
 
-                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_call_to_wheel_time))) AS average_call_to_wheel_time,
-                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_wheel_to_scene_time))) AS average_wheel_to_scene_time,
-                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_scene_to_hospital_time))) AS average_scene_to_hospital_time,
-                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_hospital_to_base_time))) AS average_hospital_to_base_time,
-                    SEC_TO_TIME(AVG(TIME_TO_SEC(a.average_response_time))) AS average_response_time_mmss
+                    AVG(a.average_call_to_wheel_time::interval)
+                        AS average_call_to_wheel_time,
+
+                    AVG(a.average_wheel_to_scene_time::interval)
+                        AS average_wheel_to_scene_time,
+
+                    AVG(a.average_scene_to_hospital_time::interval)
+                        AS average_scene_to_hospital_time,
+
+                    AVG(a.average_hospital_to_base_time::interval)
+                        AS average_hospital_to_base_time,
+
+                    AVG(a.average_response_time::interval)
+                        AS average_response_time_mmss
 
                 FROM ambulance_averages_dash a
 
                 JOIN ems_ambulance ea
-                    ON a.amb_rto_register_no = ea.amb_rto_register_no
+                    ON a.ambulance_no = ea.amb_rto_register_no
 
                 JOIN ems_mas_division dv
                     ON ea.amb_div_code = dv.div_code
 
                 {where_clause}
 
-                GROUP BY dv.div_code, dv.div_name
+                GROUP BY dv.div_name
             """
 
             division_results = await cached_query(
@@ -901,15 +949,32 @@ async def response_time_metrics_ws(websocket: WebSocket):
             )
 
             divisions_data = []
+
             for row in division_results:
+
                 divisions_data.append({
-                    "division_code": row["division_code"],
+
                     "division_name": row["division_name"],
-                    "average_call_to_wheel_time": format_time(row["average_call_to_wheel_time"]),
-                    "average_wheel_to_scene_time": format_time(row["average_wheel_to_scene_time"]),
-                    "average_scene_to_hospital_time": format_time(row["average_scene_to_hospital_time"]),
-                    "average_hospital_to_base_time": format_time(row["average_hospital_to_base_time"]),
-                    "average_response_time_mmss": format_time(row["average_response_time_mmss"]),
+
+                    "average_call_to_wheel_time": format_time(
+                        row["average_call_to_wheel_time"]
+                    ),
+
+                    "average_wheel_to_scene_time": format_time(
+                        row["average_wheel_to_scene_time"]
+                    ),
+
+                    "average_scene_to_hospital_time": format_time(
+                        row["average_scene_to_hospital_time"]
+                    ),
+
+                    "average_hospital_to_base_time": format_time(
+                        row["average_hospital_to_base_time"]
+                    ),
+
+                    "average_response_time_mmss": format_time(
+                        row["average_response_time_mmss"]
+                    ),
                 })
 
             current_data["divisions"] = divisions_data
@@ -922,5 +987,4 @@ async def response_time_metrics_ws(websocket: WebSocket):
 
     except WebSocketDisconnect:
         print("Client disconnected.")
-###########################################################################################################################
-
+##################################################################################################################################
