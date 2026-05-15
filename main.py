@@ -15,6 +15,10 @@ from datetime import timedelta
 import asyncio
 import httpx
 from fastapi.middleware.cors import CORSMiddleware
+from sklearn.cluster import KMeans
+from scipy.spatial import KDTree
+from fastapi import Query
+from typing import Optional
 
 
 
@@ -405,168 +409,230 @@ async def ambulance_counts_district_ws(websocket: WebSocket):
 
         await websocket.close()
 ##########################################Villages Over 20 min api#############################################################
-ETA_THRESHOLD_MIN = 20.0
-DETOUR_FACTOR     = 1.3
 
-
+ETA_THRESHOLD_MIN  = 20.0
+DETOUR_FACTOR      = 1.3
+AVG_SPEED_KMPH     = 60.0
+BOUNDARY_RADIUS_KM = 1.5
+ 
+COVERAGE_RADIUS_KM = (
+    (ETA_THRESHOLD_MIN * AVG_SPEED_KMPH)
+    / (60.0 * DETOUR_FACTOR)
+) + BOUNDARY_RADIUS_KM
+ 
+ 
 _village_centroid_cache = {}
-
-
+ 
+ 
+# ─────────────────────────────────────────────
+# CENTROID
+# ─────────────────────────────────────────────
+ 
 def get_village_centroid(uid, geometry):
+ 
     if uid in _village_centroid_cache:
         return _village_centroid_cache[uid]
-
+ 
     coords = re.findall(
         r'\[\s*([0-9\.\-]+)\s*,\s*([0-9\.\-]+)\s*\]',
         geometry
     )
+ 
     if not coords:
         return None
-
-    sample   = coords[:20]
-    lons     = [float(c[0]) for c in sample]
-    lats     = [float(c[1]) for c in sample]
-    centroid = (sum(lats) / len(lats), sum(lons) / len(lons))
-
+ 
+    sample = coords[:20]
+    lons = [float(c[0]) for c in sample]
+    lats = [float(c[1]) for c in sample]
+ 
+    centroid = (
+        sum(lats) / len(lats),
+        sum(lons) / len(lons)
+    )
+ 
     _village_centroid_cache[uid] = centroid
     return centroid
-
-
-def build_ambulance_kdtree(ambulance_rows):
+ 
+ 
+# ─────────────────────────────────────────────
+# KD TREE
+# ─────────────────────────────────────────────
+ 
+def build_ambulance_kdtree(rows):
+ 
     points = []
-    for amb in ambulance_rows:
+ 
+    for amb in rows:
         try:
-            points.append([float(amb["amb_lat"]), float(amb["amb_log"])])
+            points.append([
+                float(amb["amb_lat"]),
+                float(amb["amb_log"])
+            ])
         except:
             continue
-
+ 
     if not points:
         return None, None
-
-    arr  = np.array(points)
-    tree = KDTree(arr)
-    return tree, arr
-
-
+ 
+    arr = np.array(points)
+    return KDTree(arr), arr
+ 
+ 
+# ─────────────────────────────────────────────
+# HAVERSINE
+# ─────────────────────────────────────────────
+ 
 def haversine_vectorized(lat1_arr, lon1_arr, lat2_arr, lon2_arr):
-    R    = 6371.0
+ 
+    R = 6371.0
+ 
     lat1 = np.radians(lat1_arr)
     lon1 = np.radians(lon1_arr)
     lat2 = np.radians(lat2_arr)
     lon2 = np.radians(lon2_arr)
-
+ 
     dlat = lat2 - lat1
     dlon = lon2 - lon1
-
+ 
     a = (
         np.sin(dlat / 2) ** 2
         + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
     )
-    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-    return R * c
+ 
+    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+ 
+ 
+# ─────────────────────────────────────────────
+# ETA CALCULATION
+# ─────────────────────────────────────────────
+ 
+def compute_eta(straight_km):
+ 
+    effective_distance_km = np.maximum(
+        straight_km - BOUNDARY_RADIUS_KM, 0
+    )
+ 
+    road_km     = effective_distance_km * DETOUR_FACTOR
+    eta         = (road_km / AVG_SPEED_KMPH) * 60.0
+    eta_rounded = np.round(eta, 1)
+ 
+    return {
+        "eta":                   eta_rounded,
+        "road_km":               road_km,
+        "effective_distance_km": effective_distance_km,
+    }
+ 
+ 
+# ─────────────────────────────────────────────
+# NEAREST DISTANCE
+# ─────────────────────────────────────────────
+ 
+def nearest_straight_km(centroids, tree, amb_arr):
+ 
+    _, near_idx = tree.query(centroids)
+    near = amb_arr[near_idx]
+ 
+    return haversine_vectorized(
+        near[:, 0], near[:, 1],
+        centroids[:, 0], centroids[:, 1],
+    )
+ 
+ 
+# ─────────────────────────────────────────────
+# COVERAGE RULE  —  single source of truth
+#   eta <= 20  →  COVERED   (boundary touch = covered)
+#   eta >  20  →  UNCOVERED
+# ─────────────────────────────────────────────
+ 
+def is_covered(eta_arr, threshold=ETA_THRESHOLD_MIN):
+    return eta_arr <= threshold
+ 
+def is_uncovered(eta_arr, threshold=ETA_THRESHOLD_MIN):
+    return eta_arr > threshold
+ 
 
-
+ 
 @app.get("/villages_over_20min")
 async def villages_over_20min(
     eta_threshold_min: float = ETA_THRESHOLD_MIN,
 ):
+ 
     ambulance_query = """
-        SELECT
-            amb_lat,
-            amb_log
+        SELECT amb_lat, amb_log
         FROM ems_ambulance
         WHERE ambis_deleted = '0'
-          AND amb_lat IS NOT NULL
-          AND amb_log IS NOT NULL
-          AND amb_lat <> ''
-          AND amb_log <> ''
+          AND amb_lat IS NOT NULL AND amb_log IS NOT NULL
+          AND amb_lat <> ''      AND amb_log <> ''
     """
-
+ 
     village_query = """
-        SELECT
-            state,
-            district,
-            tehsil,
-            village,
-            uid,
-            geometry
+        SELECT district, tehsil, village, uid, geometry
         FROM maha_village_v1
         WHERE geometry IS NOT NULL
     """
-
-    ambulance_rows = await cached_query(ambulance_query, ttl=300)
-    village_rows   = await cached_query(village_query,   ttl=300)
-
+ 
+    ambulance_rows, village_rows = await asyncio.gather(
+        cached_query(ambulance_query, ttl=300),
+        cached_query(village_query,   ttl=300),
+    )
+ 
     tree, amb_arr = build_ambulance_kdtree(ambulance_rows)
+ 
     if tree is None:
-        return {
-            "total_villages": 0,
-            "villages":       [],
-            "error":          "No valid ambulance coordinates found",
-        }
-
+        return {"error": "No valid ambulance coordinates found"}
+ 
     village_data = []
     for v in village_rows:
         centroid = get_village_centroid(v["uid"], v["geometry"])
         if centroid:
             village_data.append((centroid, v))
-
+ 
     if not village_data:
-        return {
-            "total_villages": 0,
-            "villages":       [],
-            "error":          "No valid village geometries found",
-        }
-
-    centroids        = np.array([d[0] for d in village_data])
-    _, nearest_idx   = tree.query(centroids)
-    nearest_amb_lats = amb_arr[nearest_idx, 0]
-    nearest_amb_lons = amb_arr[nearest_idx, 1]
-    village_lats     = centroids[:, 0]
-    village_lons     = centroids[:, 1]
-
-    straight_km = haversine_vectorized(
-        nearest_amb_lats, nearest_amb_lons,
-        village_lats,     village_lons,
-    )
-
-    road_km     = straight_km * DETOUR_FACTOR
-    eta_minutes = (road_km / 45.0) * 60.0
-
-    # Round ke baad compare — floating point 20.0 issue fix
-    eta_rounded = np.round(eta_minutes, 1)
-
+        return {"error": "No valid village geometries found"}
+ 
+    centroids             = np.array([d[0] for d in village_data])
+    straight_km           = nearest_straight_km(centroids, tree, amb_arr)
+    eta_result            = compute_eta(straight_km)
+    eta_rounded           = eta_result["eta"]
+    road_km               = eta_result["road_km"]
+    effective_distance_km = eta_result["effective_distance_km"]
+ 
+    # eta <= threshold → covered  |  eta > threshold → uncovered
+    covered_mask   = is_covered(eta_rounded,   eta_threshold_min)
+    uncovered_mask = is_uncovered(eta_rounded, eta_threshold_min)
+ 
     total_villages  = len(village_data)
-    uncovered_mask  = eta_rounded > eta_threshold_min   # strictly > 20.0
-    covered_mask    = ~uncovered_mask
-
+    covered_count   = int(np.sum(covered_mask))
     uncovered_count = int(np.sum(uncovered_mask))
-    covered_count   = total_villages - uncovered_count
-
-    uncovered_pct   = round((uncovered_count / total_villages) * 100, 1)
     covered_pct     = round((covered_count   / total_villages) * 100, 1)
-
-    avg_eta_covered   = round(float(np.mean(eta_rounded[covered_mask])),   1) if covered_count   > 0 else 0.0
-    avg_eta_uncovered = round(float(np.mean(eta_rounded[uncovered_mask])), 1) if uncovered_count > 0 else 0.0
-
-    village_list = [
+    uncovered_pct   = round((uncovered_count / total_villages) * 100, 1)
+ 
+    avg_eta_covered = (
+        round(float(np.mean(eta_rounded[covered_mask])), 1)
+        if covered_count > 0 else 0.0
+    )
+    avg_eta_uncovered = (
+        round(float(np.mean(eta_rounded[uncovered_mask])), 1)
+        if uncovered_count > 0 else 0.0
+    )
+ 
+    uncovered_villages = [
         {
-            "state":             v["state"],
-            "district":          v["district"],
-            "tehsil":            v["tehsil"],
-            "village":           v["village"],
-            "uid":               v["uid"],
-            "geometry":          v["geometry"],
-            "straight_line_km":  round(float(straight_km[i]), 2),
-            "estimated_road_km": round(float(road_km[i]),     2),
-            "eta_minutes":       float(eta_rounded[i]),
+            "district":              v["district"],
+            "tehsil":                v["tehsil"],
+            "village":               v["village"],
+            "uid":                   v["uid"],
+            "straight_line_km":      round(float(straight_km[i]),           2),
+            "effective_distance_km": round(float(effective_distance_km[i]), 2),
+            "estimated_road_km":     round(float(road_km[i]),               2),
+            "eta_minutes":           float(eta_rounded[i]),
         }
         for i, (_, v) in enumerate(village_data)
         if uncovered_mask[i]
     ]
-
-    village_list.sort(key=lambda x: x["eta_minutes"], reverse=True)
-
+ 
+    uncovered_villages.sort(key=lambda x: x["eta_minutes"], reverse=True)
+ 
     return {
         "summary": {
             "total_villages":        total_villages,
@@ -578,7 +644,149 @@ async def villages_over_20min(
             "avg_eta_uncovered_min": avg_eta_uncovered,
             "eta_threshold_min":     eta_threshold_min,
         },
-        "Uncovered_villages": village_list,
+        "uncovered_villages": uncovered_villages,
+    }
+ 
+@app.get("/full_coverage_placement")
+async def full_coverage_placement():
+ 
+    ambulance_query = """
+        SELECT amb_lat, amb_log
+        FROM ems_ambulance
+        WHERE ambis_deleted = '0'
+          AND amb_lat IS NOT NULL AND amb_log IS NOT NULL
+          AND amb_lat <> ''      AND amb_log <> ''
+    """
+ 
+    village_query = """
+        SELECT district, tehsil, village, uid, geometry
+        FROM maha_village_v1
+        WHERE geometry IS NOT NULL
+    """
+ 
+    ambulance_rows, village_rows = await asyncio.gather(
+        cached_query(ambulance_query, ttl=300),
+        cached_query(village_query,   ttl=300),
+    )
+ 
+    tree, amb_arr = build_ambulance_kdtree(ambulance_rows)
+ 
+    if tree is None:
+        return {"error": "No valid ambulance coordinates found"}
+ 
+    village_data = []
+    for v in village_rows:
+        centroid = get_village_centroid(v["uid"], v["geometry"])
+        if centroid:
+            village_data.append((centroid, v))
+ 
+    if not village_data:
+        return {"error": "No valid village geometries found"}
+ 
+    all_centroids  = np.array([d[0] for d in village_data])
+    total_villages = len(village_data)
+ 
+    
+    straight_km_init  = nearest_straight_km(all_centroids, tree, amb_arr)
+    eta_init          = compute_eta(straight_km_init)["eta"]
+ 
+   
+    covered_initially = is_covered(eta_init)
+ 
+    covered_before   = int(np.sum(covered_initially))
+    uncovered_before = total_villages - covered_before
+ 
+    
+    all_amb_points   = amb_arr.tolist()
+    new_ambulances   = []
+    radius_deg       = COVERAGE_RADIUS_KM / 111.0   
+ 
+    uncovered_idx    = np.where(~covered_initially)[0]
+    placement_number = 0
+ 
+    while len(uncovered_idx) > 0:
+ 
+        placement_number += 1
+        uncov_centroids = all_centroids[uncovered_idx]
+        uncov_tree      = KDTree(uncov_centroids)
+ 
+        
+        counts = np.array([
+            len(uncov_tree.query_ball_point(pt, radius_deg))
+            for pt in uncov_centroids
+        ])
+ 
+        best_local_idx = int(np.argmax(counts))
+        best_centroid  = uncov_centroids[best_local_idx]
+ 
+        new_ambulances.append({
+            "placement_number":      placement_number,
+            "lat":                   round(float(best_centroid[0]), 6),
+            "lon":                   round(float(best_centroid[1]), 6),
+            "covers_villages_count": int(counts[best_local_idx]),
+        })
+ 
+        all_amb_points.append([float(best_centroid[0]), float(best_centroid[1])])
+ 
+       
+        new_amb_arr     = np.array(all_amb_points)
+        new_tree        = KDTree(new_amb_arr)
+        straight_km_new = nearest_straight_km(all_centroids, new_tree, new_amb_arr)
+        eta_new         = compute_eta(straight_km_new)["eta"]
+ 
+        
+        uncovered_idx   = np.where(is_uncovered(eta_new))[0]
+ 
+    # ── final per-village details ────────────────────────────────
+    final_amb_arr   = np.array(all_amb_points)
+    final_tree      = KDTree(final_amb_arr)
+    straight_km_fin = nearest_straight_km(all_centroids, final_tree, final_amb_arr)
+    eta_fin_result  = compute_eta(straight_km_fin)
+    eta_fin         = eta_fin_result["eta"]
+    road_km_fin     = eta_fin_result["road_km"]
+    eff_dist_fin    = eta_fin_result["effective_distance_km"]
+ 
+    covered_after = int(np.sum(is_covered(eta_fin)))
+    newly_covered = covered_after - covered_before
+ 
+    village_coverage = []
+    for i, (_, v) in enumerate(village_data):
+        was_covered = bool(covered_initially[i])
+        now_covered = bool(is_covered(eta_fin[i]))
+        village_coverage.append({
+            "district":              v["district"],
+            "tehsil":                v["tehsil"],
+            "village":               v["village"],
+            "uid":                   v["uid"],
+            "straight_line_km":      round(float(straight_km_fin[i]), 2),
+            "effective_distance_km": round(float(eff_dist_fin[i]),    2),
+            "estimated_road_km":     round(float(road_km_fin[i]),     2),
+            "eta_minutes":           float(eta_fin[i]),
+            "covered_by_existing":   was_covered,
+            "covered_after_new":     now_covered,
+            "status": (
+                "covered_existing" if was_covered
+                else "covered_new"  if now_covered
+                else "still_uncovered"
+            ),
+        })
+ 
+    village_coverage.sort(key=lambda x: x["eta_minutes"])
+ 
+    return {
+        "summary": {
+            "total_villages":            total_villages,
+            "covered_villages_before":   covered_before,
+            "uncovered_villages_before": uncovered_before,
+            "covered_villages_after":    covered_after,
+            "uncovered_villages_after":  total_villages - covered_after,
+            "newly_covered_villages":    newly_covered,
+            "new_ambulances_needed":     len(new_ambulances),
+            "coverage_radius_km":        round(COVERAGE_RADIUS_KM, 2),
+            "eta_threshold_min":         ETA_THRESHOLD_MIN,
+        },
+        "new_ambulance_placements": new_ambulances,
+        "village_coverage":         village_coverage,
     }
 ###########################################Response Time Websocket##################################################################################################
 def format_time(value):
@@ -715,3 +923,4 @@ async def response_time_metrics_ws(websocket: WebSocket):
     except WebSocketDisconnect:
         print("Client disconnected.")
 ###########################################################################################################################
+
