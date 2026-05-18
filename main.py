@@ -595,7 +595,6 @@ async def villages_over_20min(
     road_km               = eta_result["road_km"]
     effective_distance_km = eta_result["effective_distance_km"]
  
-    # eta <= threshold → covered  |  eta > threshold → uncovered
     covered_mask   = is_covered(eta_rounded,   eta_threshold_min)
     uncovered_mask = is_uncovered(eta_rounded, eta_threshold_min)
  
@@ -620,8 +619,9 @@ async def villages_over_20min(
             "tehsil":                v["tehsil"],
             "village":               v["village"],
             "uid":                   v["uid"],
-            "lat":                   round(float(centroids[i][0]), 6),  # ✅ ADDED
-            "lon":                   round(float(centroids[i][1]), 6),  # ✅ ADDED
+            "lat":                   round(float(centroids[i][0]), 6),
+            "lon":                   round(float(centroids[i][1]), 6),
+            "geometry":              v["geometry"],              # ✅ ADDED
             "straight_line_km":      round(float(straight_km[i]),           2),
             "effective_distance_km": round(float(effective_distance_km[i]), 2),
             "estimated_road_km":     round(float(road_km[i]),               2),
@@ -686,20 +686,17 @@ async def full_coverage_placement():
     all_centroids  = np.array([d[0] for d in village_data])
     total_villages = len(village_data)
  
-    
     straight_km_init  = nearest_straight_km(all_centroids, tree, amb_arr)
     eta_init          = compute_eta(straight_km_init)["eta"]
  
-   
     covered_initially = is_covered(eta_init)
  
     covered_before   = int(np.sum(covered_initially))
     uncovered_before = total_villages - covered_before
  
-    
     all_amb_points   = amb_arr.tolist()
     new_ambulances   = []
-    radius_deg       = COVERAGE_RADIUS_KM / 111.0   
+    radius_deg       = COVERAGE_RADIUS_KM / 111.0
  
     uncovered_idx    = np.where(~covered_initially)[0]
     placement_number = 0
@@ -710,7 +707,6 @@ async def full_coverage_placement():
         uncov_centroids = all_centroids[uncovered_idx]
         uncov_tree      = KDTree(uncov_centroids)
  
-        
         counts = np.array([
             len(uncov_tree.query_ball_point(pt, radius_deg))
             for pt in uncov_centroids
@@ -728,13 +724,11 @@ async def full_coverage_placement():
  
         all_amb_points.append([float(best_centroid[0]), float(best_centroid[1])])
  
-       
         new_amb_arr     = np.array(all_amb_points)
         new_tree        = KDTree(new_amb_arr)
         straight_km_new = nearest_straight_km(all_centroids, new_tree, new_amb_arr)
         eta_new         = compute_eta(straight_km_new)["eta"]
  
-        
         uncovered_idx   = np.where(is_uncovered(eta_new))[0]
  
     # ── final per-village details ────────────────────────────────
@@ -758,6 +752,9 @@ async def full_coverage_placement():
             "tehsil":                v["tehsil"],
             "village":               v["village"],
             "uid":                   v["uid"],
+            "lat":                   round(float(all_centroids[i][0]), 6),  # ✅ ADDED
+            "lon":                   round(float(all_centroids[i][1]), 6),  # ✅ ADDED
+            "geometry":              v["geometry"],                          # ✅ ADDED
             "straight_line_km":      round(float(straight_km_fin[i]), 2),
             "effective_distance_km": round(float(eff_dist_fin[i]),    2),
             "estimated_road_km":     round(float(road_km_fin[i]),     2),
