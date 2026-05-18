@@ -8,8 +8,6 @@ import json
 import re
 import numpy as np
 from scipy.spatial import KDTree
-from math import radians
-import re
 from functools import lru_cache
 from datetime import timedelta
 import asyncio
@@ -622,6 +620,8 @@ async def villages_over_20min(
             "tehsil":                v["tehsil"],
             "village":               v["village"],
             "uid":                   v["uid"],
+            "lat":                   round(float(centroids[i][0]), 6),  # ✅ ADDED
+            "lon":                   round(float(centroids[i][1]), 6),  # ✅ ADDED
             "straight_line_km":      round(float(straight_km[i]),           2),
             "effective_distance_km": round(float(effective_distance_km[i]), 2),
             "estimated_road_km":     round(float(road_km[i]),               2),
