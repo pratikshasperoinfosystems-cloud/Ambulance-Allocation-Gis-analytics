@@ -135,6 +135,278 @@ async def get_ambulances():
     }
 
 ######################################Ambulance Counts Websocket#######################################################################
+# @app.websocket("/ws/ambulance_counts")
+# async def ambulance_counts_district_ws(websocket: WebSocket):
+
+#     await websocket.accept()
+
+#     prev_data = {}
+
+#     try:
+
+#         while True:
+
+#             # =========================
+#             # FETCH AMBULANCE TYPES
+#             # =========================
+#             type_query = """
+#                 SELECT
+#                     ambt_id,
+#                     ambt_name
+#                 FROM ems_mas_ambulance_type
+#                 WHERE ambtis_deleted = '0'
+#                 ORDER BY ambt_id
+#             """
+
+#             type_result = await cached_query(
+#                 type_query,
+#                 ttl=300
+#             )
+
+#             amb_type_mapping = {
+
+#                 str(row["ambt_id"]): row["ambt_name"]
+
+#                 for row in type_result
+#             }
+
+#             # =========================
+#             # MAIN QUERY
+#             # =========================
+#             query = """
+#                 SELECT
+#                     md.dst_name,
+
+#                     ea.amb_type,
+
+#                     SUM(
+#                         CASE
+#                             WHEN ea.amb_status = '7'
+#                             THEN 1
+#                             ELSE 0
+#                         END
+#                     ) AS offroad_count,
+
+#                     SUM(
+#                         CASE
+#                             WHEN ea.amb_status != '7'
+#                             AND ea.amb_status != '5'
+#                             THEN 1
+#                             ELSE 0
+#                         END
+#                     ) AS onroad_count,
+
+#                     SUM(
+#                         CASE
+#                             WHEN ea.amb_status = '1'
+#                             THEN 1
+#                             ELSE 0
+#                         END
+#                     ) AS free_count,
+
+#                     SUM(
+#                         CASE
+#                             WHEN ea.amb_status = '2'
+#                             THEN 1
+#                             ELSE 0
+#                         END
+#                     ) AS busy_count,
+
+#                     COUNT(*) AS total_count
+
+#                 FROM ems_ambulance ea
+
+#                 LEFT JOIN ems_mas_districts md
+#                     ON ea.amb_district = md.dst_code
+
+#                 WHERE ea.ambis_deleted = '0'
+
+#                 GROUP BY
+#                     md.dst_name,
+#                     ea.amb_type
+#             """
+
+#             result = await cached_query(
+#                 query,
+#                 ttl=10
+#             )
+
+#             # =========================
+#             # RESPONSE STRUCTURE
+#             # =========================
+#             overall_data = {}
+
+#             district_data = {}
+
+#             total_all = 0
+#             total_onroad_all = 0
+#             total_offroad_all = 0
+#             total_free_all = 0
+#             total_busy_all = 0
+
+#             # =========================
+#             # PROCESS DATA
+#             # =========================
+#             for row in result:
+
+#                 district_name = row["dst_name"] or "UNKNOWN"
+
+#                 amb_type_name = amb_type_mapping.get(
+#                     str(row["amb_type"]),
+#                     f"TYPE_{row['amb_type']}"
+#                 )
+
+#                 offroad = int(row["offroad_count"] or 0)
+
+#                 onroad = int(row["onroad_count"] or 0)
+
+#                 free = int(row["free_count"] or 0)
+
+#                 busy = int(row["busy_count"] or 0)
+
+#                 total = int(row["total_count"] or 0)
+
+#                 # OVERALL
+#                 if amb_type_name not in overall_data:
+
+#                     overall_data[amb_type_name] = {
+
+#                         "total": 0,
+
+#                         "onroad": 0,
+
+#                         "offroad": 0,
+
+#                         "free": 0,
+
+#                         "busy": 0
+#                     }
+
+#                 overall_data[amb_type_name]["total"] += total
+#                 overall_data[amb_type_name]["onroad"] += onroad
+#                 overall_data[amb_type_name]["offroad"] += offroad
+#                 overall_data[amb_type_name]["free"] += free
+#                 overall_data[amb_type_name]["busy"] += busy
+
+#                 # GRAND TOTAL
+#                 total_all += total
+#                 total_onroad_all += onroad
+#                 total_offroad_all += offroad
+#                 total_free_all += free
+#                 total_busy_all += busy
+
+#                 # DISTRICT
+#                 if district_name not in district_data:
+
+#                     district_data[district_name] = {}
+
+#                 if amb_type_name not in district_data[district_name]:
+
+#                     district_data[district_name][amb_type_name] = {
+
+#                         "total": 0,
+
+#                         "onroad": 0,
+
+#                         "offroad": 0,
+
+#                         "free": 0,
+
+#                         "busy": 0
+#                     }
+
+#                 district_data[district_name][amb_type_name]["total"] += total
+
+#                 district_data[district_name][amb_type_name]["onroad"] += onroad
+
+#                 district_data[district_name][amb_type_name]["offroad"] += offroad
+
+#                 district_data[district_name][amb_type_name]["free"] += free
+
+#                 district_data[district_name][amb_type_name]["busy"] += busy
+
+#             # =========================
+#             # ADD MISSING TYPES
+#             # =========================
+#             for type_name in amb_type_mapping.values():
+
+#                 if type_name not in overall_data:
+
+#                     overall_data[type_name] = {
+
+#                         "total": 0,
+
+#                         "onroad": 0,
+
+#                         "offroad": 0,
+
+#                         "free": 0,
+
+#                         "busy": 0
+#                     }
+
+#                 for district in district_data:
+
+#                     if type_name not in district_data[district]:
+
+#                         district_data[district][type_name] = {
+
+#                             "total": 0,
+
+#                             "onroad": 0,
+
+#                             "offroad": 0,
+
+#                             "free": 0,
+
+#                             "busy": 0
+#                         }
+
+#             # =========================
+#             # TOTAL ROW
+#             # =========================
+#             overall_data["TOTAL"] = {
+
+#                 "total": total_all,
+
+#                 "onroad": total_onroad_all,
+
+#                 "offroad": total_offroad_all,
+
+#                 "free": total_free_all,
+
+#                 "busy": total_busy_all
+#             }
+
+#             # =========================
+#             # FINAL RESPONSE
+#             # =========================
+#             final_response = {
+
+#                 "overall": overall_data,
+
+#                 "districts": district_data
+#             }
+
+#             # SEND ONLY IF CHANGED
+#             if final_response != prev_data:
+
+#                 await websocket.send_json(final_response)
+
+#                 prev_data = final_response
+
+#             await asyncio.sleep(15)
+
+#     except WebSocketDisconnect:
+
+#         print("WebSocket disconnected")
+
+#     except Exception as e:
+
+#         print(f"WebSocket Error: {e}")
+
+#         await websocket.close()
+
 @app.websocket("/ws/ambulance_counts")
 async def ambulance_counts_district_ws(websocket: WebSocket):
 
@@ -164,9 +436,7 @@ async def ambulance_counts_district_ws(websocket: WebSocket):
             )
 
             amb_type_mapping = {
-
                 str(row["ambt_id"]): row["ambt_name"]
-
                 for row in type_result
             }
 
@@ -257,73 +527,52 @@ async def ambulance_counts_district_ws(websocket: WebSocket):
                 )
 
                 offroad = int(row["offroad_count"] or 0)
-
-                onroad = int(row["onroad_count"] or 0)
-
-                free = int(row["free_count"] or 0)
-
-                busy = int(row["busy_count"] or 0)
-
-                total = int(row["total_count"] or 0)
+                onroad  = int(row["onroad_count"]  or 0)
+                free    = int(row["free_count"]    or 0)
+                busy    = int(row["busy_count"]    or 0)
+                total   = int(row["total_count"]   or 0)
 
                 # OVERALL
                 if amb_type_name not in overall_data:
-
                     overall_data[amb_type_name] = {
-
-                        "total": 0,
-
-                        "onroad": 0,
-
+                        "total":   0,
+                        "onroad":  0,
                         "offroad": 0,
-
-                        "free": 0,
-
-                        "busy": 0
+                        "free":    0,
+                        "busy":    0
                     }
 
-                overall_data[amb_type_name]["total"] += total
-                overall_data[amb_type_name]["onroad"] += onroad
+                overall_data[amb_type_name]["total"]   += total
+                overall_data[amb_type_name]["onroad"]  += onroad
                 overall_data[amb_type_name]["offroad"] += offroad
-                overall_data[amb_type_name]["free"] += free
-                overall_data[amb_type_name]["busy"] += busy
+                overall_data[amb_type_name]["free"]    += free
+                overall_data[amb_type_name]["busy"]    += busy
 
                 # GRAND TOTAL
-                total_all += total
-                total_onroad_all += onroad
+                total_all         += total
+                total_onroad_all  += onroad
                 total_offroad_all += offroad
-                total_free_all += free
-                total_busy_all += busy
+                total_free_all    += free
+                total_busy_all    += busy
 
                 # DISTRICT
                 if district_name not in district_data:
-
                     district_data[district_name] = {}
 
                 if amb_type_name not in district_data[district_name]:
-
                     district_data[district_name][amb_type_name] = {
-
-                        "total": 0,
-
-                        "onroad": 0,
-
+                        "total":   0,
+                        "onroad":  0,
                         "offroad": 0,
-
-                        "free": 0,
-
-                        "busy": 0
+                        "free":    0,
+                        "busy":    0
                     }
 
-                district_data[district_name][amb_type_name]["total"] += total
-
-                district_data[district_name][amb_type_name]["onroad"] += onroad
-
+                district_data[district_name][amb_type_name]["total"]   += total
+                district_data[district_name][amb_type_name]["onroad"]  += onroad
                 district_data[district_name][amb_type_name]["offroad"] += offroad
-
-                district_data[district_name][amb_type_name]["free"] += free
-
-                district_data[district_name][amb_type_name]["busy"] += busy
+                district_data[district_name][amb_type_name]["free"]    += free
+                district_data[district_name][amb_type_name]["busy"]    += busy
 
             # =========================
             # ADD MISSING TYPES
@@ -331,460 +580,429 @@ async def ambulance_counts_district_ws(websocket: WebSocket):
             for type_name in amb_type_mapping.values():
 
                 if type_name not in overall_data:
-
                     overall_data[type_name] = {
-
-                        "total": 0,
-
-                        "onroad": 0,
-
+                        "total":   0,
+                        "onroad":  0,
                         "offroad": 0,
-
-                        "free": 0,
-
-                        "busy": 0
+                        "free":    0,
+                        "busy":    0
                     }
 
                 for district in district_data:
-
                     if type_name not in district_data[district]:
-
                         district_data[district][type_name] = {
-
-                            "total": 0,
-
-                            "onroad": 0,
-
+                            "total":   0,
+                            "onroad":  0,
                             "offroad": 0,
-
-                            "free": 0,
-
-                            "busy": 0
+                            "free":    0,
+                            "busy":    0
                         }
 
             # =========================
-            # TOTAL ROW
+            # OVERALL TOTAL ROW
             # =========================
             overall_data["TOTAL"] = {
-
-                "total": total_all,
-
-                "onroad": total_onroad_all,
-
+                "total":   total_all,
+                "onroad":  total_onroad_all,
                 "offroad": total_offroad_all,
-
-                "free": total_free_all,
-
-                "busy": total_busy_all
+                "free":    total_free_all,
+                "busy":    total_busy_all
             }
+
+            # =========================
+            # DISTRICT OVERALL ROW
+            # =========================
+            for district_name, types in district_data.items():
+
+                dist_total   = 0
+                dist_onroad  = 0
+                dist_offroad = 0
+                dist_free    = 0
+                dist_busy    = 0
+
+                for type_name, counts in types.items():
+                    dist_total   += counts["total"]
+                    dist_onroad  += counts["onroad"]
+                    dist_offroad += counts["offroad"]
+                    dist_free    += counts["free"]
+                    dist_busy    += counts["busy"]
+
+                district_data[district_name]["TOTAL"] = {
+                    "total":   dist_total,
+                    "onroad":  dist_onroad,
+                    "offroad": dist_offroad,
+                    "free":    dist_free,
+                    "busy":    dist_busy
+                }
 
             # =========================
             # FINAL RESPONSE
             # =========================
             final_response = {
-
-                "overall": overall_data,
-
+                "overall":   overall_data,
                 "districts": district_data
             }
 
             # SEND ONLY IF CHANGED
             if final_response != prev_data:
-
                 await websocket.send_json(final_response)
-
                 prev_data = final_response
 
             await asyncio.sleep(15)
 
     except WebSocketDisconnect:
-
         print("WebSocket disconnected")
 
     except Exception as e:
-
         print(f"WebSocket Error: {e}")
-
         await websocket.close()
 ##########################################Villages Over 20 min api#############################################################
 
-ETA_THRESHOLD_MIN  = 20.0
-DETOUR_FACTOR      = 1.3
-AVG_SPEED_KMPH     = 60.0
-BOUNDARY_RADIUS_KM = 1.5
+# ETA_THRESHOLD_MIN  = 20.0
+# DETOUR_FACTOR      = 1.3
+# AVG_SPEED_KMPH     = 60.0
+# BOUNDARY_RADIUS_KM = 1.5
  
-COVERAGE_RADIUS_KM = (
-    (ETA_THRESHOLD_MIN * AVG_SPEED_KMPH)
-    / (60.0 * DETOUR_FACTOR)
-) + BOUNDARY_RADIUS_KM
- 
- 
-_village_centroid_cache = {}
+# COVERAGE_RADIUS_KM = (
+#     (ETA_THRESHOLD_MIN * AVG_SPEED_KMPH)
+#     / (60.0 * DETOUR_FACTOR)
+# ) + BOUNDARY_RADIUS_KM
  
  
-# ─────────────────────────────────────────────
-# CENTROID
-# ─────────────────────────────────────────────
- 
-def get_village_centroid(uid, geometry):
- 
-    if uid in _village_centroid_cache:
-        return _village_centroid_cache[uid]
- 
-    coords = re.findall(
-        r'\[\s*([0-9\.\-]+)\s*,\s*([0-9\.\-]+)\s*\]',
-        geometry
-    )
- 
-    if not coords:
-        return None
- 
-    sample = coords[:20]
-    lons = [float(c[0]) for c in sample]
-    lats = [float(c[1]) for c in sample]
- 
-    centroid = (
-        sum(lats) / len(lats),
-        sum(lons) / len(lons)
-    )
- 
-    _village_centroid_cache[uid] = centroid
-    return centroid
+# _village_centroid_cache = {}
  
  
-# ─────────────────────────────────────────────
-# KD TREE
-# ─────────────────────────────────────────────
+# # ─────────────────────────────────────────────
+# # CENTROID
+# # ─────────────────────────────────────────────
  
-def build_ambulance_kdtree(rows):
+# def get_village_centroid(uid, geometry):
  
-    points = []
+#     if uid in _village_centroid_cache:
+#         return _village_centroid_cache[uid]
  
-    for amb in rows:
-        try:
-            points.append([
-                float(amb["amb_lat"]),
-                float(amb["amb_log"])
-            ])
-        except:
-            continue
+#     coords = re.findall(
+#         r'\[\s*([0-9\.\-]+)\s*,\s*([0-9\.\-]+)\s*\]',
+#         geometry
+#     )
  
-    if not points:
-        return None, None
+#     if not coords:
+#         return None
  
-    arr = np.array(points)
-    return KDTree(arr), arr
+#     sample = coords[:20]
+#     lons = [float(c[0]) for c in sample]
+#     lats = [float(c[1]) for c in sample]
  
+#     centroid = (
+#         sum(lats) / len(lats),
+#         sum(lons) / len(lons)
+#     )
  
-# ─────────────────────────────────────────────
-# HAVERSINE
-# ─────────────────────────────────────────────
- 
-def haversine_vectorized(lat1_arr, lon1_arr, lat2_arr, lon2_arr):
- 
-    R = 6371.0
- 
-    lat1 = np.radians(lat1_arr)
-    lon1 = np.radians(lon1_arr)
-    lat2 = np.radians(lat2_arr)
-    lon2 = np.radians(lon2_arr)
- 
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
- 
-    a = (
-        np.sin(dlat / 2) ** 2
-        + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
-    )
- 
-    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+#     _village_centroid_cache[uid] = centroid
+#     return centroid
  
  
-# ─────────────────────────────────────────────
-# ETA CALCULATION
-# ─────────────────────────────────────────────
+# # ─────────────────────────────────────────────
+# # KD TREE
+# # ─────────────────────────────────────────────
  
-def compute_eta(straight_km):
+# def build_ambulance_kdtree(rows):
  
-    effective_distance_km = np.maximum(
-        straight_km - BOUNDARY_RADIUS_KM, 0
-    )
+#     points = []
  
-    road_km     = effective_distance_km * DETOUR_FACTOR
-    eta         = (road_km / AVG_SPEED_KMPH) * 60.0
-    eta_rounded = np.round(eta, 1)
+#     for amb in rows:
+#         try:
+#             points.append([
+#                 float(amb["amb_lat"]),
+#                 float(amb["amb_log"])
+#             ])
+#         except:
+#             continue
  
-    return {
-        "eta":                   eta_rounded,
-        "road_km":               road_km,
-        "effective_distance_km": effective_distance_km,
-    }
+#     if not points:
+#         return None, None
  
- 
-# ─────────────────────────────────────────────
-# NEAREST DISTANCE
-# ─────────────────────────────────────────────
- 
-def nearest_straight_km(centroids, tree, amb_arr):
- 
-    _, near_idx = tree.query(centroids)
-    near = amb_arr[near_idx]
- 
-    return haversine_vectorized(
-        near[:, 0], near[:, 1],
-        centroids[:, 0], centroids[:, 1],
-    )
+#     arr = np.array(points)
+#     return KDTree(arr), arr
  
  
-# ─────────────────────────────────────────────
-# COVERAGE RULE  —  single source of truth
-#   eta <= 20  →  COVERED   (boundary touch = covered)
-#   eta >  20  →  UNCOVERED
-# ─────────────────────────────────────────────
+# # ─────────────────────────────────────────────
+# # HAVERSINE
+# # ─────────────────────────────────────────────
  
-def is_covered(eta_arr, threshold=ETA_THRESHOLD_MIN):
-    return eta_arr <= threshold
+# def haversine_vectorized(lat1_arr, lon1_arr, lat2_arr, lon2_arr):
  
-def is_uncovered(eta_arr, threshold=ETA_THRESHOLD_MIN):
-    return eta_arr > threshold
+#     R = 6371.0
+ 
+#     lat1 = np.radians(lat1_arr)
+#     lon1 = np.radians(lon1_arr)
+#     lat2 = np.radians(lat2_arr)
+#     lon2 = np.radians(lon2_arr)
+ 
+#     dlat = lat2 - lat1
+#     dlon = lon2 - lon1
+ 
+#     a = (
+#         np.sin(dlat / 2) ** 2
+#         + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+#     )
+ 
+#     return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+ 
+ 
+# # ─────────────────────────────────────────────
+# # ETA CALCULATION
+# # ─────────────────────────────────────────────
+ 
+# def compute_eta(straight_km):
+ 
+#     effective_distance_km = np.maximum(
+#         straight_km - BOUNDARY_RADIUS_KM, 0
+#     )
+ 
+#     road_km     = effective_distance_km * DETOUR_FACTOR
+#     eta         = (road_km / AVG_SPEED_KMPH) * 60.0
+#     eta_rounded = np.round(eta, 1)
+ 
+#     return {
+#         "eta":                   eta_rounded,
+#         "road_km":               road_km,
+#         "effective_distance_km": effective_distance_km,
+#     }
+ 
+ 
+# # ─────────────────────────────────────────────
+# # NEAREST DISTANCE
+# # ─────────────────────────────────────────────
+ 
+# def nearest_straight_km(centroids, tree, amb_arr):
+ 
+#     _, near_idx = tree.query(centroids)
+#     near = amb_arr[near_idx]
+ 
+#     return haversine_vectorized(
+#         near[:, 0], near[:, 1],
+#         centroids[:, 0], centroids[:, 1],
+#     )
+ 
+ 
+# # ─────────────────────────────────────────────
+# # COVERAGE RULE  —  single source of truth
+# #   eta <= 20  →  COVERED   (boundary touch = covered)
+# #   eta >  20  →  UNCOVERED
+# # ─────────────────────────────────────────────
+ 
+# def is_covered(eta_arr, threshold=ETA_THRESHOLD_MIN):
+#     return eta_arr <= threshold
+ 
+# def is_uncovered(eta_arr, threshold=ETA_THRESHOLD_MIN):
+#     return eta_arr > threshold
  
 
  
-@app.get("/villages_over_20min")
-async def villages_over_20min(
-    eta_threshold_min: float = ETA_THRESHOLD_MIN,
-):
+# @app.get("/villages_over_20min")
+# async def villages_over_20min(
+#     eta_threshold_min: float = ETA_THRESHOLD_MIN,
+# ):
  
-    ambulance_query = """
-        SELECT amb_lat, amb_log
-        FROM ems_ambulance
-        WHERE ambis_deleted = '0'
-          AND amb_lat IS NOT NULL AND amb_log IS NOT NULL
-          AND amb_lat <> ''      AND amb_log <> ''
-    """
+#     ambulance_query = """
+#         SELECT amb_lat, amb_log
+#         FROM ems_ambulance
+#         WHERE ambis_deleted = '0'
+#           AND amb_lat IS NOT NULL AND amb_log IS NOT NULL
+#           AND amb_lat <> ''      AND amb_log <> ''
+#     """
  
-    village_query = """
-        SELECT district, tehsil, village, uid, geometry
-        FROM maha_village_v1
-        WHERE geometry IS NOT NULL
-    """
+#     village_query = """
+#         SELECT district, tehsil, village, uid, geometry
+#         FROM maha_village_v1
+#         WHERE geometry IS NOT NULL
+#     """
  
-    ambulance_rows, village_rows = await asyncio.gather(
-        cached_query(ambulance_query, ttl=300),
-        cached_query(village_query,   ttl=300),
-    )
+#     ambulance_rows, village_rows = await asyncio.gather(
+#         cached_query(ambulance_query, ttl=300),
+#         cached_query(village_query,   ttl=300),
+#     )
  
-    tree, amb_arr = build_ambulance_kdtree(ambulance_rows)
+#     tree, amb_arr = build_ambulance_kdtree(ambulance_rows)
  
-    if tree is None:
-        return {"error": "No valid ambulance coordinates found"}
+#     if tree is None:
+#         return {"error": "No valid ambulance coordinates found"}
  
-    village_data = []
-    for v in village_rows:
-        centroid = get_village_centroid(v["uid"], v["geometry"])
-        if centroid:
-            village_data.append((centroid, v))
+#     village_data = []
+#     for v in village_rows:
+#         centroid = get_village_centroid(v["uid"], v["geometry"])
+#         if centroid:
+#             village_data.append((centroid, v))
  
-    if not village_data:
-        return {"error": "No valid village geometries found"}
+#     if not village_data:
+#         return {"error": "No valid village geometries found"}
  
-    centroids             = np.array([d[0] for d in village_data])
-    straight_km           = nearest_straight_km(centroids, tree, amb_arr)
-    eta_result            = compute_eta(straight_km)
-    eta_rounded           = eta_result["eta"]
-    road_km               = eta_result["road_km"]
-    effective_distance_km = eta_result["effective_distance_km"]
+#     centroids             = np.array([d[0] for d in village_data])
+#     straight_km           = nearest_straight_km(centroids, tree, amb_arr)
+#     eta_result            = compute_eta(straight_km)
+#     eta_rounded           = eta_result["eta"]
+#     road_km               = eta_result["road_km"]
+#     effective_distance_km = eta_result["effective_distance_km"]
  
-    covered_mask   = is_covered(eta_rounded,   eta_threshold_min)
-    uncovered_mask = is_uncovered(eta_rounded, eta_threshold_min)
+#     covered_mask   = is_covered(eta_rounded,   eta_threshold_min)
+#     uncovered_mask = is_uncovered(eta_rounded, eta_threshold_min)
  
-    total_villages  = len(village_data)
-    covered_count   = int(np.sum(covered_mask))
-    uncovered_count = int(np.sum(uncovered_mask))
-    covered_pct     = round((covered_count   / total_villages) * 100, 1)
-    uncovered_pct   = round((uncovered_count / total_villages) * 100, 1)
+#     total_villages  = len(village_data)
+#     covered_count   = int(np.sum(covered_mask))
+#     uncovered_count = int(np.sum(uncovered_mask))
+#     covered_pct     = round((covered_count   / total_villages) * 100, 1)
+#     uncovered_pct   = round((uncovered_count / total_villages) * 100, 1)
  
-    avg_eta_covered = (
-        round(float(np.mean(eta_rounded[covered_mask])), 1)
-        if covered_count > 0 else 0.0
-    )
-    avg_eta_uncovered = (
-        round(float(np.mean(eta_rounded[uncovered_mask])), 1)
-        if uncovered_count > 0 else 0.0
-    )
+#     avg_eta_covered = (
+#         round(float(np.mean(eta_rounded[covered_mask])), 1)
+#         if covered_count > 0 else 0.0
+#     )
+#     avg_eta_uncovered = (
+#         round(float(np.mean(eta_rounded[uncovered_mask])), 1)
+#         if uncovered_count > 0 else 0.0
+#     )
  
-    uncovered_villages = [
-        {
-            "district":              v["district"],
-            "tehsil":                v["tehsil"],
-            "village":               v["village"],
-            "uid":                   v["uid"],
-            "lat":                   round(float(centroids[i][0]), 6),
-            "lon":                   round(float(centroids[i][1]), 6),
-            "geometry":              v["geometry"],              # ✅ ADDED
-            "straight_line_km":      round(float(straight_km[i]),           2),
-            "effective_distance_km": round(float(effective_distance_km[i]), 2),
-            "estimated_road_km":     round(float(road_km[i]),               2),
-            "eta_minutes":           float(eta_rounded[i]),
-        }
-        for i, (_, v) in enumerate(village_data)
-        if uncovered_mask[i]
-    ]
+#     uncovered_villages = [
+#         {
+#             "district":              v["district"],
+#             "tehsil":                v["tehsil"],
+#             "village":               v["village"],
+#             "uid":                   v["uid"],
+#             "lat":                   round(float(centroids[i][0]), 6),
+#             "lon":                   round(float(centroids[i][1]), 6),
+#             "geometry":              v["geometry"],
+#             "straight_line_km":      round(float(straight_km[i]),           2),
+#             "effective_distance_km": round(float(effective_distance_km[i]), 2),
+#             "estimated_road_km":     round(float(road_km[i]),               2),
+#             "eta_minutes":           float(eta_rounded[i]),
+#         }
+#         for i, (_, v) in enumerate(village_data)
+#         if uncovered_mask[i]
+#     ]
  
-    uncovered_villages.sort(key=lambda x: x["eta_minutes"], reverse=True)
+#     uncovered_villages.sort(key=lambda x: x["eta_minutes"], reverse=True)
  
-    return {
-        "summary": {
-            "total_villages":        total_villages,
-            "covered_villages":      covered_count,
-            "uncovered_villages":    uncovered_count,
-            "covered_pct":           f"{covered_pct}%",
-            "uncovered_pct":         f"{uncovered_pct}%",
-            "avg_eta_covered_min":   avg_eta_covered,
-            "avg_eta_uncovered_min": avg_eta_uncovered,
-            "eta_threshold_min":     eta_threshold_min,
-        },
-        "uncovered_villages": uncovered_villages,
-    }
+#     return {
+#         "summary": {
+#             "total_villages":        total_villages,
+#             "covered_villages":      covered_count,
+#             "uncovered_villages":    uncovered_count,
+#             "covered_pct":           f"{covered_pct}%",
+#             "uncovered_pct":         f"{uncovered_pct}%",
+#             "avg_eta_covered_min":   avg_eta_covered,
+#             "avg_eta_uncovered_min": avg_eta_uncovered,
+#             "eta_threshold_min":     eta_threshold_min,
+#         },
+#         "uncovered_villages": uncovered_villages,
+#     }
  
-@app.get("/full_coverage_placement")
-async def full_coverage_placement():
+# @app.get("/full_coverage_placement")
+# async def full_coverage_placement():
  
-    ambulance_query = """
-        SELECT amb_lat, amb_log
-        FROM ems_ambulance
-        WHERE ambis_deleted = '0'
-          AND amb_lat IS NOT NULL AND amb_log IS NOT NULL
-          AND amb_lat <> ''      AND amb_log <> ''
-    """
+#     ambulance_query = """
+#         SELECT amb_lat, amb_log
+#         FROM ems_ambulance
+#         WHERE ambis_deleted = '0'
+#           AND amb_lat IS NOT NULL AND amb_log IS NOT NULL
+#           AND amb_lat <> ''      AND amb_log <> ''
+#     """
  
-    village_query = """
-        SELECT district, tehsil, village, uid, geometry
-        FROM maha_village_v1
-        WHERE geometry IS NOT NULL
-    """
+#     village_query = """
+#         SELECT district, tehsil, village, uid, geometry
+#         FROM maha_village_v1
+#         WHERE geometry IS NOT NULL
+#     """
  
-    ambulance_rows, village_rows = await asyncio.gather(
-        cached_query(ambulance_query, ttl=300),
-        cached_query(village_query,   ttl=300),
-    )
+#     ambulance_rows, village_rows = await asyncio.gather(
+#         cached_query(ambulance_query, ttl=300),
+#         cached_query(village_query,   ttl=300),
+#     )
  
-    tree, amb_arr = build_ambulance_kdtree(ambulance_rows)
+#     tree, amb_arr = build_ambulance_kdtree(ambulance_rows)
  
-    if tree is None:
-        return {"error": "No valid ambulance coordinates found"}
+#     if tree is None:
+#         return {"error": "No valid ambulance coordinates found"}
  
-    village_data = []
-    for v in village_rows:
-        centroid = get_village_centroid(v["uid"], v["geometry"])
-        if centroid:
-            village_data.append((centroid, v))
+#     village_data = []
+#     for v in village_rows:
+#         centroid = get_village_centroid(v["uid"], v["geometry"])
+#         if centroid:
+#             village_data.append((centroid, v))
  
-    if not village_data:
-        return {"error": "No valid village geometries found"}
+#     if not village_data:
+#         return {"error": "No valid village geometries found"}
  
-    all_centroids  = np.array([d[0] for d in village_data])
-    total_villages = len(village_data)
+#     all_centroids  = np.array([d[0] for d in village_data])
+#     total_villages = len(village_data)
  
-    straight_km_init  = nearest_straight_km(all_centroids, tree, amb_arr)
-    eta_init          = compute_eta(straight_km_init)["eta"]
+#     straight_km_init  = nearest_straight_km(all_centroids, tree, amb_arr)
+#     eta_init          = compute_eta(straight_km_init)["eta"]
  
-    covered_initially = is_covered(eta_init)
+#     covered_initially = is_covered(eta_init)
  
-    covered_before   = int(np.sum(covered_initially))
-    uncovered_before = total_villages - covered_before
+#     covered_before   = int(np.sum(covered_initially))
+#     uncovered_before = total_villages - covered_before
  
-    all_amb_points   = amb_arr.tolist()
-    new_ambulances   = []
-    radius_deg       = COVERAGE_RADIUS_KM / 111.0
+#     all_amb_points   = amb_arr.tolist()
+#     new_ambulances   = []
+#     radius_deg       = COVERAGE_RADIUS_KM / 111.0
  
-    uncovered_idx    = np.where(~covered_initially)[0]
-    placement_number = 0
+#     uncovered_idx    = np.where(~covered_initially)[0]
+#     placement_number = 0
  
-    while len(uncovered_idx) > 0:
+#     while len(uncovered_idx) > 0:
  
-        placement_number += 1
-        uncov_centroids = all_centroids[uncovered_idx]
-        uncov_tree      = KDTree(uncov_centroids)
+#         placement_number += 1
+#         uncov_centroids = all_centroids[uncovered_idx]
+#         uncov_tree      = KDTree(uncov_centroids)
  
-        counts = np.array([
-            len(uncov_tree.query_ball_point(pt, radius_deg))
-            for pt in uncov_centroids
-        ])
+#         counts = np.array([
+#             len(uncov_tree.query_ball_point(pt, radius_deg))
+#             for pt in uncov_centroids
+#         ])
  
-        best_local_idx = int(np.argmax(counts))
-        best_centroid  = uncov_centroids[best_local_idx]
+#         best_local_idx = int(np.argmax(counts))
+#         best_centroid  = uncov_centroids[best_local_idx]
  
-        new_ambulances.append({
-            "placement_number":      placement_number,
-            "lat":                   round(float(best_centroid[0]), 6),
-            "lon":                   round(float(best_centroid[1]), 6),
-            "covers_villages_count": int(counts[best_local_idx]),
-        })
+#         new_ambulances.append({
+#             "placement_number":      placement_number,
+#             "lat":                   round(float(best_centroid[0]), 6),
+#             "lon":                   round(float(best_centroid[1]), 6),
+#             "covers_villages_count": int(counts[best_local_idx]),
+#         })
  
-        all_amb_points.append([float(best_centroid[0]), float(best_centroid[1])])
+#         all_amb_points.append([float(best_centroid[0]), float(best_centroid[1])])
  
-        new_amb_arr     = np.array(all_amb_points)
-        new_tree        = KDTree(new_amb_arr)
-        straight_km_new = nearest_straight_km(all_centroids, new_tree, new_amb_arr)
-        eta_new         = compute_eta(straight_km_new)["eta"]
+#         new_amb_arr     = np.array(all_amb_points)
+#         new_tree        = KDTree(new_amb_arr)
+#         straight_km_new = nearest_straight_km(all_centroids, new_tree, new_amb_arr)
+#         eta_new         = compute_eta(straight_km_new)["eta"]
  
-        uncovered_idx   = np.where(is_uncovered(eta_new))[0]
+#         uncovered_idx   = np.where(is_uncovered(eta_new))[0]
  
-    # ── final per-village details ────────────────────────────────
-    final_amb_arr   = np.array(all_amb_points)
-    final_tree      = KDTree(final_amb_arr)
-    straight_km_fin = nearest_straight_km(all_centroids, final_tree, final_amb_arr)
-    eta_fin_result  = compute_eta(straight_km_fin)
-    eta_fin         = eta_fin_result["eta"]
-    road_km_fin     = eta_fin_result["road_km"]
-    eff_dist_fin    = eta_fin_result["effective_distance_km"]
+#     final_amb_arr   = np.array(all_amb_points)
+#     final_tree      = KDTree(final_amb_arr)
+#     straight_km_fin = nearest_straight_km(all_centroids, final_tree, final_amb_arr)
+#     eta_fin         = compute_eta(straight_km_fin)["eta"]
+
+#     covered_after = int(np.sum(is_covered(eta_fin)))
+#     newly_covered = covered_after - covered_before
  
-    covered_after = int(np.sum(is_covered(eta_fin)))
-    newly_covered = covered_after - covered_before
- 
-    village_coverage = []
-    for i, (_, v) in enumerate(village_data):
-        was_covered = bool(covered_initially[i])
-        now_covered = bool(is_covered(eta_fin[i]))
-        village_coverage.append({
-            "district":              v["district"],
-            "tehsil":                v["tehsil"],
-            "village":               v["village"],
-            "uid":                   v["uid"],
-            "lat":                   round(float(all_centroids[i][0]), 6),  # ✅ ADDED
-            "lon":                   round(float(all_centroids[i][1]), 6),  # ✅ ADDED
-            "geometry":              v["geometry"],                          # ✅ ADDED
-            "straight_line_km":      round(float(straight_km_fin[i]), 2),
-            "effective_distance_km": round(float(eff_dist_fin[i]),    2),
-            "estimated_road_km":     round(float(road_km_fin[i]),     2),
-            "eta_minutes":           float(eta_fin[i]),
-            "covered_by_existing":   was_covered,
-            "covered_after_new":     now_covered,
-            "status": (
-                "covered_existing" if was_covered
-                else "covered_new"  if now_covered
-                else "still_uncovered"
-            ),
-        })
- 
-    village_coverage.sort(key=lambda x: x["eta_minutes"])
- 
-    return {
-        "summary": {
-            "total_villages":            total_villages,
-            "covered_villages_before":   covered_before,
-            "uncovered_villages_before": uncovered_before,
-            "covered_villages_after":    covered_after,
-            "uncovered_villages_after":  total_villages - covered_after,
-            "newly_covered_villages":    newly_covered,
-            "new_ambulances_needed":     len(new_ambulances),
-            "coverage_radius_km":        round(COVERAGE_RADIUS_KM, 2),
-            "eta_threshold_min":         ETA_THRESHOLD_MIN,
-        },
-        "new_ambulance_placements": new_ambulances,
-        "village_coverage":         village_coverage,
-    }
+#     return {
+#         "summary": {
+#             "total_villages":            total_villages,
+#             "covered_villages_before":   covered_before,
+#             "uncovered_villages_before": uncovered_before,
+#             "covered_villages_after":    covered_after,
+#             "uncovered_villages_after":  total_villages - covered_after,
+#             "newly_covered_villages":    newly_covered,
+#             "new_ambulances_needed":     len(new_ambulances),
+#             "coverage_radius_km":        round(COVERAGE_RADIUS_KM, 2),
+#             "eta_threshold_min":         ETA_THRESHOLD_MIN,
+#         },
+#         "new_ambulance_placements": new_ambulances,
+#     }
 ###########################################Response Time Websocket##################################################################################################
 def format_time(value):
     if value is None:
@@ -984,4 +1202,508 @@ async def response_time_metrics_ws(websocket: WebSocket):
 
     except WebSocketDisconnect:
         print("Client disconnected.")
+
+
 ##################################################################################################################################
+ETA_THRESHOLD_MIN  = 20.0
+DETOUR_FACTOR      = 1.3
+AVG_SPEED_KMPH     = 60.0
+BOUNDARY_RADIUS_KM = 1.5
+ 
+COVERAGE_RADIUS_KM = (
+    (ETA_THRESHOLD_MIN * AVG_SPEED_KMPH)
+    / (60.0 * DETOUR_FACTOR)
+) + BOUNDARY_RADIUS_KM
+ 
+ 
+_village_centroid_cache = {}
+ 
+ 
+# ─────────────────────────────────────────────
+# CENTROID
+# ─────────────────────────────────────────────
+ 
+def get_village_centroid(uid, geometry):
+ 
+    if uid in _village_centroid_cache:
+        return _village_centroid_cache[uid]
+ 
+    coords = re.findall(
+        r'\[\s*([0-9\.\-]+)\s*,\s*([0-9\.\-]+)\s*\]',
+        geometry
+    )
+ 
+    if not coords:
+        return None
+ 
+    sample = coords[:20]
+    lons = [float(c[0]) for c in sample]
+    lats = [float(c[1]) for c in sample]
+ 
+    centroid = (
+        sum(lats) / len(lats),
+        sum(lons) / len(lons)
+    )
+ 
+    _village_centroid_cache[uid] = centroid
+    return centroid
+ 
+ 
+# ─────────────────────────────────────────────
+# KD TREE
+# ─────────────────────────────────────────────
+ 
+def build_ambulance_kdtree(rows):
+ 
+    points = []
+ 
+    for amb in rows:
+        try:
+            points.append([
+                float(amb["amb_lat"]),
+                float(amb["amb_log"])
+            ])
+        except:
+            continue
+ 
+    if not points:
+        return None, None
+ 
+    arr = np.array(points)
+    return KDTree(arr), arr
+ 
+ 
+# ─────────────────────────────────────────────
+# HAVERSINE
+# ─────────────────────────────────────────────
+ 
+def haversine_vectorized(lat1_arr, lon1_arr, lat2_arr, lon2_arr):
+ 
+    R = 6371.0
+ 
+    lat1 = np.radians(lat1_arr)
+    lon1 = np.radians(lon1_arr)
+    lat2 = np.radians(lat2_arr)
+    lon2 = np.radians(lon2_arr)
+ 
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+ 
+    a = (
+        np.sin(dlat / 2) ** 2
+        + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    )
+ 
+    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+ 
+ 
+# ─────────────────────────────────────────────
+# ETA CALCULATION
+# ─────────────────────────────────────────────
+ 
+def compute_eta(straight_km):
+ 
+    effective_distance_km = np.maximum(
+        straight_km - BOUNDARY_RADIUS_KM, 0
+    )
+ 
+    road_km     = effective_distance_km * DETOUR_FACTOR
+    eta         = (road_km / AVG_SPEED_KMPH) * 60.0
+    eta_rounded = np.round(eta, 1)
+ 
+    return {
+        "eta":                   eta_rounded,
+        "road_km":               road_km,
+        "effective_distance_km": effective_distance_km,
+    }
+ 
+ 
+# ─────────────────────────────────────────────
+# NEAREST DISTANCE
+# ─────────────────────────────────────────────
+ 
+def nearest_straight_km(centroids, tree, amb_arr):
+ 
+    _, near_idx = tree.query(centroids)
+    near = amb_arr[near_idx]
+ 
+    return haversine_vectorized(
+        near[:, 0], near[:, 1],
+        centroids[:, 0], centroids[:, 1],
+    )
+ 
+ 
+# ─────────────────────────────────────────────
+# COVERAGE RULE  —  single source of truth
+#   eta <= 20  →  COVERED   (boundary touch = covered)
+#   eta >  20  →  UNCOVERED
+# ─────────────────────────────────────────────
+ 
+def is_covered(eta_arr, threshold=ETA_THRESHOLD_MIN):
+    return eta_arr <= threshold
+ 
+def is_uncovered(eta_arr, threshold=ETA_THRESHOLD_MIN):
+    return eta_arr > threshold
+ 
+
+ 
+# ─────────────────────────────────────────────
+# API 1 — UNCOVERED VILLAGES
+# ─────────────────────────────────────────────
+
+@app.get("/villages_over_20min")
+async def villages_over_20min(
+    eta_threshold_min: float = ETA_THRESHOLD_MIN,
+    division: Optional[str] = None,
+    district: Optional[str] = None,
+    tehsil:   Optional[str] = None,
+):
+       
+    
+    
+    if not division and not district and not tehsil:
+        return {
+            "message": "Please provide at least one filter: division, district, or tehsil to get uncovered villages."
+            
+        }
+
+    ambulance_query = """
+        SELECT amb_lat, amb_log
+        FROM ems_ambulance
+        WHERE ambis_deleted = '0'
+          AND amb_lat IS NOT NULL AND amb_log IS NOT NULL
+          AND amb_lat <> ''      AND amb_log <> ''
+    """
+ 
+    village_query = """
+        SELECT division, district, tehsil, village, uid, geometry
+        FROM maha_village_v1
+        WHERE geometry IS NOT NULL
+    """
+
+    filters = []
+    if division:
+        filters.append(f"division = '{division}'")
+    if district:
+        filters.append(f"district = '{district}'")
+    if tehsil:
+        filters.append(f"tehsil = '{tehsil}'")
+
+    if filters:
+        village_query += " AND " + " AND ".join(filters)
+ 
+    ambulance_rows, village_rows = await asyncio.gather(
+        cached_query(ambulance_query, ttl=300),
+        cached_query(village_query,   ttl=300),
+    )
+ 
+    tree, amb_arr = build_ambulance_kdtree(ambulance_rows)
+ 
+    if tree is None:
+        return {"error": "No valid ambulance coordinates found"}
+ 
+    village_data = []
+    for v in village_rows:
+        centroid = get_village_centroid(v["uid"], v["geometry"])
+        if centroid:
+            village_data.append((centroid, v))
+ 
+    if not village_data:
+        return {"error": "No valid village geometries found"}
+ 
+    centroids             = np.array([d[0] for d in village_data])
+    straight_km           = nearest_straight_km(centroids, tree, amb_arr)
+    eta_result            = compute_eta(straight_km)
+    eta_rounded           = eta_result["eta"]
+    road_km               = eta_result["road_km"]
+    effective_distance_km = eta_result["effective_distance_km"]
+ 
+    covered_mask   = is_covered(eta_rounded,   eta_threshold_min)
+    uncovered_mask = is_uncovered(eta_rounded, eta_threshold_min)
+ 
+    total_villages  = len(village_data)
+    covered_count   = int(np.sum(covered_mask))
+    uncovered_count = int(np.sum(uncovered_mask))
+    covered_pct     = round((covered_count   / total_villages) * 100, 1)
+    uncovered_pct   = round((uncovered_count / total_villages) * 100, 1)
+ 
+    avg_eta_covered = (
+        round(float(np.mean(eta_rounded[covered_mask])), 1)
+        if covered_count > 0 else 0.0
+    )
+    avg_eta_uncovered = (
+        round(float(np.mean(eta_rounded[uncovered_mask])), 1)
+        if uncovered_count > 0 else 0.0
+    )
+ 
+    uncovered_villages = [
+        {
+            "division":              v["division"],
+            "district":              v["district"],
+            "tehsil":                v["tehsil"],
+            "village":               v["village"],
+            "uid":                   v["uid"],
+            "lat":                   round(float(centroids[i][0]), 6),
+            "lon":                   round(float(centroids[i][1]), 6),
+            "geometry":              v["geometry"],
+            "straight_line_km":      round(float(straight_km[i]),           2),
+            "effective_distance_km": round(float(effective_distance_km[i]), 2),
+            "estimated_road_km":     round(float(road_km[i]),               2),
+            "eta_minutes":           float(eta_rounded[i]),
+        }
+        for i, (_, v) in enumerate(village_data)
+        if uncovered_mask[i]
+    ]
+ 
+    uncovered_villages.sort(key=lambda x: x["eta_minutes"], reverse=True)
+ 
+    return {
+        "summary": {
+            "total_villages":        total_villages,
+            "covered_villages":      covered_count,
+            "uncovered_villages":    uncovered_count,
+            "covered_pct":           f"{covered_pct}%",
+            "uncovered_pct":         f"{uncovered_pct}%",
+            "avg_eta_covered_min":   avg_eta_covered,
+            "avg_eta_uncovered_min": avg_eta_uncovered,
+            "eta_threshold_min":     eta_threshold_min,
+        },
+        "uncovered_villages": uncovered_villages,
+    }
+
+
+# ─────────────────────────────────────────────
+# API 2 — COVERED VILLAGES
+# ─────────────────────────────────────────────
+
+@app.get("/villages_under_20min")
+async def villages_under_20min(
+    eta_threshold_min: float = ETA_THRESHOLD_MIN,
+    division: Optional[str] = None,
+    district: Optional[str] = None,
+    tehsil:   Optional[str] = None,
+):
+    
+   
+
+    if not division and not district and not tehsil:
+        return {
+            "message": "Please provide at least one filter: division, district, or tehsil to get covered villages."
+           
+        }
+
+    ambulance_query = """
+        SELECT amb_lat, amb_log
+        FROM ems_ambulance
+        WHERE ambis_deleted = '0'
+          AND amb_lat IS NOT NULL AND amb_log IS NOT NULL
+          AND amb_lat <> ''      AND amb_log <> ''
+    """
+
+    village_query = """
+        SELECT division, district, tehsil, village, uid, geometry
+        FROM maha_village_v1
+        WHERE geometry IS NOT NULL
+    """
+
+    filters = []
+    if division:
+        filters.append(f"division = '{division}'")
+    if district:
+        filters.append(f"district = '{district}'")
+    if tehsil:
+        filters.append(f"tehsil = '{tehsil}'")
+
+    if filters:
+        village_query += " AND " + " AND ".join(filters)
+
+    ambulance_rows, village_rows = await asyncio.gather(
+        cached_query(ambulance_query, ttl=300),
+        cached_query(village_query,   ttl=300),
+    )
+
+    tree, amb_arr = build_ambulance_kdtree(ambulance_rows)
+
+    if tree is None:
+        return {"error": "No valid ambulance coordinates found"}
+
+    village_data = []
+    for v in village_rows:
+        centroid = get_village_centroid(v["uid"], v["geometry"])
+        if centroid:
+            village_data.append((centroid, v))
+
+    if not village_data:
+        return {"error": "No valid village geometries found"}
+
+    centroids             = np.array([d[0] for d in village_data])
+    straight_km           = nearest_straight_km(centroids, tree, amb_arr)
+    eta_result            = compute_eta(straight_km)
+    eta_rounded           = eta_result["eta"]
+    road_km               = eta_result["road_km"]
+    effective_distance_km = eta_result["effective_distance_km"]
+
+    covered_mask   = is_covered(eta_rounded,   eta_threshold_min)
+    uncovered_mask = is_uncovered(eta_rounded, eta_threshold_min)
+
+    total_villages  = len(village_data)
+    covered_count   = int(np.sum(covered_mask))
+    uncovered_count = int(np.sum(uncovered_mask))
+    covered_pct     = round((covered_count   / total_villages) * 100, 1)
+    uncovered_pct   = round((uncovered_count / total_villages) * 100, 1)
+
+    avg_eta_covered = (
+        round(float(np.mean(eta_rounded[covered_mask])), 1)
+        if covered_count > 0 else 0.0
+    )
+    avg_eta_uncovered = (
+        round(float(np.mean(eta_rounded[uncovered_mask])), 1)
+        if uncovered_count > 0 else 0.0
+    )
+
+    covered_villages = [
+        {
+            "division":              v["division"],
+            "district":              v["district"],
+            "tehsil":                v["tehsil"],
+            "village":               v["village"],
+            "uid":                   v["uid"],
+            "lat":                   round(float(centroids[i][0]), 6),
+            "lon":                   round(float(centroids[i][1]), 6),
+            "geometry":              v["geometry"],
+            "straight_line_km":      round(float(straight_km[i]),           2),
+            "effective_distance_km": round(float(effective_distance_km[i]), 2),
+            "estimated_road_km":     round(float(road_km[i]),               2),
+            "eta_minutes":           float(eta_rounded[i]),
+        }
+        for i, (_, v) in enumerate(village_data)
+        if covered_mask[i]
+    ]
+
+    covered_villages.sort(key=lambda x: x["eta_minutes"])
+
+    return {
+        "summary": {
+            "total_villages":        total_villages,
+            "covered_villages":      covered_count,
+            "uncovered_villages":    uncovered_count,
+            "covered_pct":           f"{covered_pct}%",
+            "uncovered_pct":         f"{uncovered_pct}%",
+            "avg_eta_covered_min":   avg_eta_covered,
+            "avg_eta_uncovered_min": avg_eta_uncovered,
+            "eta_threshold_min":     eta_threshold_min,
+        },
+        "covered_villages": covered_villages,
+    }
+
+
+# ─────────────────────────────────────────────
+# API 3 — PREDICTED AMBULANCE PLACEMENTS
+# ─────────────────────────────────────────────
+
+@app.get("/full_coverage_placement")
+async def full_coverage_placement():
+ 
+    ambulance_query = """
+        SELECT amb_lat, amb_log
+        FROM ems_ambulance
+        WHERE ambis_deleted = '0'
+          AND amb_lat IS NOT NULL AND amb_log IS NOT NULL
+          AND amb_lat <> ''      AND amb_log <> ''
+    """
+ 
+    village_query = """
+        SELECT district, tehsil, village, uid, geometry
+        FROM maha_village_v1
+        WHERE geometry IS NOT NULL
+    """
+ 
+    ambulance_rows, village_rows = await asyncio.gather(
+        cached_query(ambulance_query, ttl=300),
+        cached_query(village_query,   ttl=300),
+    )
+ 
+    tree, amb_arr = build_ambulance_kdtree(ambulance_rows)
+ 
+    if tree is None:
+        return {"error": "No valid ambulance coordinates found"}
+ 
+    village_data = []
+    for v in village_rows:
+        centroid = get_village_centroid(v["uid"], v["geometry"])
+        if centroid:
+            village_data.append((centroid, v))
+ 
+    if not village_data:
+        return {"error": "No valid village geometries found"}
+ 
+    all_centroids  = np.array([d[0] for d in village_data])
+    total_villages = len(village_data)
+ 
+    straight_km_init  = nearest_straight_km(all_centroids, tree, amb_arr)
+    eta_init          = compute_eta(straight_km_init)["eta"]
+ 
+    covered_initially = is_covered(eta_init)
+ 
+    covered_before   = int(np.sum(covered_initially))
+    uncovered_before = total_villages - covered_before
+ 
+    all_amb_points   = amb_arr.tolist()
+    new_ambulances   = []
+    radius_deg       = COVERAGE_RADIUS_KM / 111.0
+ 
+    uncovered_idx    = np.where(~covered_initially)[0]
+    placement_number = 0
+ 
+    while len(uncovered_idx) > 0:
+ 
+        placement_number += 1
+        uncov_centroids = all_centroids[uncovered_idx]
+        uncov_tree      = KDTree(uncov_centroids)
+ 
+        counts = np.array([
+            len(uncov_tree.query_ball_point(pt, radius_deg))
+            for pt in uncov_centroids
+        ])
+ 
+        best_local_idx = int(np.argmax(counts))
+        best_centroid  = uncov_centroids[best_local_idx]
+ 
+        new_ambulances.append({
+            "placement_number":      placement_number,
+            "lat":                   round(float(best_centroid[0]), 6),
+            "lon":                   round(float(best_centroid[1]), 6),
+            "covers_villages_count": int(counts[best_local_idx]),
+        })
+ 
+        all_amb_points.append([float(best_centroid[0]), float(best_centroid[1])])
+ 
+        new_amb_arr     = np.array(all_amb_points)
+        new_tree        = KDTree(new_amb_arr)
+        straight_km_new = nearest_straight_km(all_centroids, new_tree, new_amb_arr)
+        eta_new         = compute_eta(straight_km_new)["eta"]
+ 
+        uncovered_idx   = np.where(is_uncovered(eta_new))[0]
+ 
+    final_amb_arr   = np.array(all_amb_points)
+    final_tree      = KDTree(final_amb_arr)
+    straight_km_fin = nearest_straight_km(all_centroids, final_tree, final_amb_arr)
+    eta_fin         = compute_eta(straight_km_fin)["eta"]
+
+    covered_after = int(np.sum(is_covered(eta_fin)))
+    newly_covered = covered_after - covered_before
+ 
+    return {
+        "summary": {
+            "total_villages":            total_villages,
+            "covered_villages_before":   covered_before,
+            "uncovered_villages_before": uncovered_before,
+            "covered_villages_after":    covered_after,
+            "uncovered_villages_after":  total_villages - covered_after,
+            "newly_covered_villages":    newly_covered,
+            "new_ambulances_needed":     len(new_ambulances),
+            "coverage_radius_km":        round(COVERAGE_RADIUS_KM, 2),
+            "eta_threshold_min":         ETA_THRESHOLD_MIN,
+        },
+        "new_ambulance_placements": new_ambulances,
+    }
